@@ -70,7 +70,7 @@ def lambda_handler(event, context):
             # Fetch service provider details
             query = """
             SELECT t.tidyspid, ud.firstname, ud.lastname, ud.latitude, ud.longitude,u.phone_number, u.email 
-            FROM tidysp t JOIN "user" u ON t.userid = u.userid JOIN userdetails ud ON u.userid = ud.userid"""
+            FROM tidysp t JOIN "users" u ON t.userid = u.userid JOIN userdetails ud ON u.userid = ud.userid"""
             cursor.execute(query)
             sp_records = cursor.fetchall()
 
