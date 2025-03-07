@@ -28,8 +28,8 @@ def lambda_handler(event, context):
             message = json.loads(record['Sns']['Message'])
             order_id = message['orderid']
             userid = message['userid']
-            tidyspid = message['tidyspid']
-            payment_id = message['paymentid']
+            tidyspid = message.get('tidyspid')
+            payment_id = message.get('paymentid')
             refund_amount = float(message['refundamount'])
             refund_status = message['refundstatus']
 
@@ -78,7 +78,7 @@ def lambda_handler(event, context):
 
                     conn.commit()
 
-                    # Log succes to SNS
+                    # Log success to SNS
                     sns_client.publish(
                         TopicArn=SNS_LOGGING_TOPIC_ARN,
                         Message=json.dumps({
