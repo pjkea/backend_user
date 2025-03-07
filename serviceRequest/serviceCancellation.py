@@ -68,7 +68,7 @@ def lambda_handler(event, context):
                             WHERE orderid = %s""", ('CANCELLED', order_id))
 
             # Update ordernotes with cancellation reason
-            cursor.execute("""INSERT INTO ordernotes (orderdetailid, note, createdat)
+            cursor.execute("""INSERT INTO ordernotes (orderid, note, createdat)
                             VALUES (%s, %s, NOW())""", (order_id, f"Order cancelled. Reason: {cancellation_reason}"))
 
             conn.commit()
@@ -79,7 +79,7 @@ def lambda_handler(event, context):
                 Message=json.dumps({
                     "logtypeid": 1,
                     "categoryid": 30,  # Service Cancellation
-                    "transactiontypeid": 12,  # Address Update(ignore)
+                    "transactiontypeid": 5,  # Order Cancellation
                     "statusid": 13,  # Cancelled
                     'userid': user_id,
                     'orderid': order_id,
@@ -109,7 +109,7 @@ def lambda_handler(event, context):
                 Message=json.dumps({
                     "logtypeid": 4,
                     "categoryid": 30,  # Service Cancellation
-                    "transactiontypeid": 12,  # Address Update(ignore)
+                    "transactiontypeid": 5,  # Order Cancellation
                     "statusid": 43,  # Failure
                     'userid': user_id,
                     'orderid': order_id,

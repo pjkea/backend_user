@@ -30,19 +30,21 @@ def lambda_handler(event, context):
             userid = message['userid']
             tidyspid = message['tidyspid']
             payment_id = message['paymentid']
-            refund_amount = message['refundamount']
+            refund_amount = float(message['refundamount'])
             refund_status = message['refundstatus']
 
-
+            conn = None
+            cursor = None
             try:
                 conn = get_db_connection()
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
 
                 # Process refund
+                refund_id = None
                 if refund_amount > 0 and payment_id:
                     # Create refund record
                     cursor.execute("""INSERT INTO payments (orderid, amount, status, createdat)
-                    VALUES (%s, %s, %s,NOW()) RETURNING paymentid""", (order_id, refund_amount, refund_status))
+                    VALUES (%s, %s, %s,NOW()) RETURNING paymentid""", (order_id, -refund_amount, refund_status))
 
                     refund_id = cursor.fetchone()['paymentid']
 
@@ -58,18 +60,19 @@ def lambda_handler(event, context):
                     cursor.execute("""INSERT INTO notifications (userid, notificationtype, message, isread, createdat)
                     VALUES (%s, %s, %s, %s, NOW())""", (userid, 'ORDER CANCELLED', user_notification_text, False))
 
+                    cursor.execute("""INSERT INTO inappmessages (orderid, senderid, receiverid, message, timesent)
+                                        VALUES (%s, %s, %s, %s, NOW())""",
+                                   (order_id, 'SYSTEM', userid, user_notification_text))
+
 
                     # Notify provider
                     if tidyspid:
                         provider_notification_text = f"A service request has been cancelled. Order ID: {order_id}"
 
                         cursor.execute("""INSERT INTO notifications (userid, notificationtype, message, isread, createdat)
-                    VALUES (%s, %s, %s, %s, NOW()""", (tidyspid, 'ORDER CANCELLED', provider_notification_text, False))
+                    VALUES (%s, %s, %s, %s, NOW())""", (tidyspid, 'ORDER CANCELLED', provider_notification_text, False))
 
                     # Inapp message for user and service provider
-                    cursor.execute("""INSERT INTO inappmessages (orderid, senderid, receiverid, message, timesent)
-                    VALUES (%s, %s, %s, %s, NOW())""", (order_id, 'SYSTEM', userid, user_notification_text))
-
                     cursor.execute("""INSERT INTO inappmessages (orderid, senderid, receiverid, message, timesent)
                         VALUES (%s, %s, %s, %s, NOW())""", (order_id, 'SYSTEM', tidyspid, provider_notification_text))
 
@@ -81,14 +84,14 @@ def lambda_handler(event, context):
                         Message=json.dumps({
                             "logtypeid": 1,
                             "categoryid": 9,  # Refund processed
-                            "transactiontypeid": 12,  # Address Update(ignore)
+                            "transactiontypeid": 5, # Order cancelation
                             "statusid": 7, # Refund processed
                             'userid': userid,
                             'tidyspidid': tidyspid,
                             'orderid': order_id,
                         })
                     )
-                    logger.info(f"Refund successful: {refund_id}")
+                    logger.info(f"Refund successful for order {order_id}: {refund_id}")
 
                     results.append({
                         'orderid': order_id,
@@ -98,7 +101,8 @@ def lambda_handler(event, context):
                     })
 
             except Exception as e:
-                conn.rollback()
+                if conn:
+                    conn.rollback()
                 logger.error(f"Database error processing order {order_id}: {str(e)}")
 
                 # Log error to SNS
@@ -107,7 +111,7 @@ def lambda_handler(event, context):
                     Message=json.dumps({
                         "logtypeid": 4,
                         "categoryid": 28, # Payment failed
-                        "transactiontypeid": 12,  # Address Update(ignore)
+                        "transactiontypeid": 5,  # Order Cancellation
                         "statusid": 26, # Payment failed
                         'userid': userid,
                         'tidyspidid': tidyspid,
@@ -125,12 +129,20 @@ def lambda_handler(event, context):
                 cursor.close()
                 conn.close()
 
+        return {
+            'statusCode': 200,
+            'body': json.dumps({'results':results})
+        }
+
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
 
         return {
             'statusCode': 500,
-            'error': str(e),
+            'body': json.dumps({
+                'status': 'ERROR',
+                'error': str(e),
+            })
         }
 
 
