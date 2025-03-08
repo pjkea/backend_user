@@ -1,11 +1,9 @@
 import json
 import boto3
 import logging
-import psycopg2
-from datetime import datetime
 from psycopg2.extras import RealDictCursor
 
-from layers.utils import get_secrets, get_db_connection, send_sms_via_twilio, send_email_via_ses
+from layers.utils import get_secrets, get_db_connection, send_sms_via_twilio, send_email_via_ses, log_to_sns
 from twilio.rest import Client
 
 # Initialize AWS services
@@ -19,17 +17,6 @@ secrets = get_secrets()
 # Configure logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-# SNS Topic ARNs
-SNS_LOGGING_TOPIC_ARN = secrets.get("SNS_LOGGING_TOPIC_ARN")
-
-# Twilio credentials
-TWILIO_ACCOUNT_SID = secrets.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = secrets.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = secrets.get("TWILIO_PHONE_NUMBER")
-
-# Initialize Twilio Client
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
 
 def format_notification_for_provider(message_data):
@@ -128,21 +115,8 @@ def lambda_handler(event, context):
                     notification_sent.append('sms')
 
                 # Log success
-                sns_client.publish(
-                    TopicArn=SNS_LOGGING_TOPIC_ARN,
-                    Message=json.dumps({
-                        "logtypeid": 1,
-                        "categoryid": 1,  # Service Request Modification
-                        "transactiontypeid": 14,  # Notification
-                        "statusid": 27,  # Success
-                        "userid": userid,
-                        "order_id": order_id,
-                        "request_id": request_id,
-                        "tidyspid": tidyspid,
-                        "notification_sent": notification_sent
-                    }),
-                    Subject=f'Service Provider Notification Success: {order_id}'
-                )
+                data = {order_id, notification_sent}
+                log_to_sns(1, 1, 14, 27, data, 'NotifyServiceProvider', userid)
 
                 logger.info(f"Successfully sent notification for order_id: {order_id}")
 
@@ -156,26 +130,13 @@ def lambda_handler(event, context):
                 logger.error(f"Failed to send notification: {record_error}")
 
                 # Log error
-                error_data = {
-                    "logtypeid": 4,
-                    "categoryid": 1,  # Service Request Modification
-                    "transactiontypeid": 14,  # Notification
-                    "statusid": 43,  # Failed
-                    "error": str(record_error)
-                }
-
-                sns_client.publish(
-                    TopicArn=SNS_LOGGING_TOPIC_ARN,
-                    Message=json.dumps(error_data),
-                    Subject='Service Provider Notification Error'
-                )
-
                 record_result['error'] = str(record_error)
+
+                log_to_sns(4, 1, 14, 43, record_result, '', userid)
 
             # Add result to processed records
             processed_records.append(record_result)
 
-        # Fixed indentation - moved outside the loop
         return {
             'statusCode': 200,
             'body': json.dumps({

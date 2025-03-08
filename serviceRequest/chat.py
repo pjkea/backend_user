@@ -27,7 +27,7 @@ def handle_connect(event, connection_id):
     try:
         # Get user identification from query parameters
         user_id = event.get('queryStringParameters', {}).get('userId')
-        user_type = event.get('queryStringParameters', {}).get('userType')  # 'user' or 'provider'
+        user_type = event.get('queryStringParameters', {}).get('role')  # 'user' or 'provider'
 
         if not user_id or not user_type:
             return {
@@ -106,8 +106,8 @@ def handle_message(event, connection_id, api_gateway_client):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""INSERT INTO inappmessages (orderid, senderid, receiverid, threadid, messagetext, timerequested)
-            VALUES (%s, %s, %s, %s, %s, %s) RETURNING MessageID""",
+        cursor.execute("""INSERT INTO inappmessages (orderid, senderid, receiverid, threadid, messagetext, timerequested, createdat)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW()) RETURNING messageid""",
             (order_id, sender_id, receiver_id, thread_id, message_text, time_requested))
 
         message_id = cursor.fetchone()[0]
@@ -121,7 +121,7 @@ def handle_message(event, connection_id, api_gateway_client):
         # Message sent timestamp
         time_sent = datetime.now()
 
-        cursor.execute("""UPDATE inappmessages SET TimeSent = %s WHERE MessageID = %s""", (time_sent, message_id))
+        cursor.execute("""UPDATE inappmessages SET timesent = %s WHERE messageid = %s""", (time_sent, message_id))
 
         # Construct message payload for WebSocket
         message_payload = json.dumps({
@@ -151,7 +151,7 @@ def handle_message(event, connection_id, api_gateway_client):
 
         # Update received timestamp if delivered
         if delivery_success and time_received:
-            cursor.execute("""UPDATE inappmessages SET TimeReceived = %s WHERE MessageID = %s""",
+            cursor.execute("""UPDATE inappmessages SET timereceived = %s WHERE messageid = %s""",
                 (time_received, message_id))
 
         # Send delivery confirmation to sender
@@ -214,24 +214,24 @@ def handle_get_history(event, connection_id, api_gateway_client):
 
         # Build query based on provided parameters
         query = """SELECT messageid, orderid, senderid, receiverid, threadid, messagetext, timerequested, timesent, timereceived
-            FROM inappmessages WHERE OrderID = %s"""
+            FROM inappmessages WHERE orderid = %s"""
         query_params = [order_id]
 
         # Add thread filter if specified
         if thread_id is not None:
-            query += " AND ThreadID = %s"
+            query += " AND threadid = %s"
             query_params.append(thread_id)
 
         # Add user filters if specified
         if other_user_id is not None:
-            query += " AND ((SenderID = %s AND ReceiverID = %s) OR (SenderID = %s AND ReceiverID = %s))"
+            query += " AND ((senderid = %s AND receiverid = %s) OR (senderis = %s AND receiverid = %s))"
             query_params.extend([requester_id, other_user_id, other_user_id, requester_id])
         else:
-            query += " AND (SenderID = %s OR ReceiverID = %s)"
+            query += " AND (senderid = %s OR receiverid = %s)"
             query_params.extend([requester_id, requester_id])
 
         # Order by time requested
-        query += " ORDER BY TimeRequested"
+        query += " ORDER BY timerequested"
 
         # Execute query
         cursor.execute(query, query_params)
@@ -280,9 +280,7 @@ def handle_get_history(event, connection_id, api_gateway_client):
 
 
 def lambda_handler(event, context):
-    """
-    Main handler for real-time chat WebSocket events
-    """
+    """Main handler for real-time chat WebSocket events"""
     route_key = event.get('requestContext', {}).get('routeKey')
     connection_id = event.get('requestContext', {}).get('connectionId')
     domain_name = event.get('requestContext', {}).get('domainName')

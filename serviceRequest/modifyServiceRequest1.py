@@ -1,10 +1,9 @@
 import json
 import boto3
 import logging
-import psycopg2
 from datetime import datetime
 
-from layers.utils import get_secrets, get_db_connection
+from layers.utils import get_secrets, get_db_connection, log_to_sns
 from psycopg2.extras import RealDictCursor
 
 # Initialize AWS services
@@ -130,7 +129,7 @@ def lambda_handler(event, context):
 
         # Set status to pending confirmation
         update_fields.append("Status = %s")
-        update_values.append(2)  # Assuming 2 is the status code for 'pending_confirmation'
+        update_values.append(2)
         updates['status'] = 'pending_confirmation'
 
         # Create database connection if not already created
@@ -212,22 +211,9 @@ def lambda_handler(event, context):
             Subject=f'Service Request Modification: {order_id}'
         )
 
-        # Log success
-        sns_client.publish(
-            TopicArn=SNS_LOGGING_TOPIC_ARN,
-            Message=json.dumps({
-                "logtypeid": 1,
-                "categoryid": 1,  # Service Request Modification
-                "transactiontypeid": 13,
-                "statusid": 49,  # Pending
-                "userid": userid,
-                "order_id": order_id,
-                "request_id": request_id,
-                "tidyspid": tidyspid,
-                "modifications": updates
-            }),
-            Subject=f'Service Request Modification Success: {order_id}'
-        )
+        data = {"order_id": order_id, "request_id": request_id, "tidyspid": tidyspid, "modifications": updates}
+
+        log_to_sns(1, 1, 13, 49, data, 'Service Request Modification Success', userid)
 
         logger.info(f"Successfully initiated request modification for order_id: {order_id}")
 
@@ -250,23 +236,8 @@ def lambda_handler(event, context):
             connection.rollback()
 
         # Log error
-        try:
-            sns_client.publish(
-                TopicArn=SNS_LOGGING_TOPIC_ARN,
-                Message=json.dumps({
-                    "logtypeid": 4,
-                    "categoryid": 1,  # Service Request Modification
-                    "transactiontypeid": 13,
-                    "statusid": 43,  # Failed
-                    "userid": userid if 'userid' in locals() else "unknown",
-                    "order_id": order_id if 'order_id' in locals() else "unknown",
-                    "request_id": request_id if 'request_id' in locals() else "unknown",
-                    "error": str(e)
-                }),
-                Subject='Service Request Modification Failure'
-            )
-        except Exception as log_error:
-            logger.error(f"Failed to log error to SNS: {log_error}")
+        data = {order_id, e}
+        log_to_sns(4, 1, 13, 43, data, 'Service Request Modification Failure', userid)
 
         return {
             'statusCode': 500,
