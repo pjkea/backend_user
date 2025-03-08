@@ -2,7 +2,7 @@ import json
 import boto3
 import logging
 from psycopg2.extras import RealDictCursor
-from serviceRequest.layers.utils import get_secrets, get_db_connection
+from serviceRequest.layers.utils import get_secrets, get_db_connection, log_to_sns
 
 
 # Initialize AWS services
@@ -17,7 +17,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # SNS Topics
-SNS_LOGGING_TOPIC_ARN = secrets['SNS_LOGGING_TOPIC_ARN']
 USER_NOTIFICATION_TOPIC_ARN = secrets['USER_NOTIFICATION_TOPIC_ARN']
 
 
@@ -66,18 +65,8 @@ def lambda_handler(event, context):
                 )
 
                 # Log success to SNS
-                sns_client.publish(
-                    TopicArn=SNS_LOGGING_TOPIC_ARN,
-                    Message=json.dumps({
-                        "logtypeid": 1,
-                        "categoryid": 1,  # Service Request
-                        "transactiontypeid": 12,  # Address Update(ignore)
-                        "statusid": 34, # Request started,
-                        "tidysp": sp_info,
-                        "userid": user_id,
-                    }),
-                    Subject='TidySp Tracking ETA Successful',
-                )
+                log_to_sns(1, 1,12, 34, sp_info, '',user_id)
+
                 logger.info(f"Successfully sent notification for SP: {sp_id}, User: {user_id}")
 
                 return {
@@ -95,18 +84,7 @@ def lambda_handler(event, context):
                 logger.error(f"Error processing record: {e}")
 
                 # Log error to SNS
-                sns_client.publish(
-                    TopicArn=SNS_LOGGING_TOPIC_ARN,
-                    Message=json.dumps({
-                        "logtypeid": 4,
-                        "categoryid": 1,  # Service Request
-                        "transactiontypeid": 12,  # Address Update(ignore)
-                        "statusid": 43,  # Failed,
-                        "tidysp": sp_info,
-                        "userid": user_id,
-                    }),
-                    Subject='TidySp Tracking ETA Failure',
-                )
+                log_to_sns(4, 1, 12, 43, sp_info, '', user_id)
 
                 return {
                     'statusCode': 500,
@@ -132,5 +110,4 @@ def lambda_handler(event, context):
         if cursor:
             cursor.close()
 
-#L2
 

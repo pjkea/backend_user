@@ -4,7 +4,7 @@ import boto3
 import logging
 import requests
 from psycopg2.extras import RealDictCursor
-from serviceRequest.layers.utils import get_secrets, get_db_connection, calculate_google_maps_eta
+from serviceRequest.layers.utils import get_secrets, get_db_connection, calculate_google_maps_eta, log_to_sns
 
 
 # Initialize AWS services
@@ -113,6 +113,9 @@ def lambda_handler(event, context):
                     Message=json.dumps({message}),
                     Subject='TidySP Location',
                 )
+
+                log_to_sns(1, 26, 1, 10, "", "", user_id)
+
                 logger.info("Succesfully sent Service Provider Loaction")
 
                 return {
@@ -132,6 +135,8 @@ def lambda_handler(event, context):
         except Exception as e:
             logger.error(f'Couldnt get current location: {e}')
 
+            log_to_sns(4, 26, 1, 43, {e}, '', user_id)
+
     except Exception as e:
         logger.error(f'Error in lambda_handler: {e}')
         return {
@@ -144,4 +149,3 @@ def lambda_handler(event, context):
             connection.close()
         if cursor:
             cursor.close()
-#L1

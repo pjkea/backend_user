@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 
-from serviceRequest.layers.utils import get_secrets, get_db_connection
+from serviceRequest.layers.utils import get_secrets, get_db_connection, log_to_sns, calculate_google_maps_eta
 
 # Initialize AWS services
 secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
@@ -42,57 +42,6 @@ def get_current_location():
         logger.error(f'Couldnt get current location: {e}')
 
 
-def calculate_google_maps_eta(origin, destination):
-    """Calculate estimated time of arrival using Google Maps Directions API"""
-    try:
-        # Prepare Google Maps Directions API request
-        base_url = "https://maps.googleapis.com/maps/api/directions/json"
-
-        params = {
-            'origin': f"{origin[0]},{origin[1]}",
-            'destination': f"{destination[0]},{destination[1]}",
-            'mode': 'driving',  # Assuming service provider is driving
-            'departure_time': 'now',  # Use current time for real-time traffic
-            'traffic_model': 'best_guess',
-            'key': GOOGLE_MAPS_API_KEY
-        }
-
-        # Make request to Google Maps API
-        response = requests.get(base_url, params=params)
-        data = response.json()
-
-        # Check if the request was successful
-        if data['status'] != 'OK':
-            return {
-                'error': f"Google Maps API error: {data['status']}",
-                'estimatedArrivalTime': None
-            }
-
-        # Extract route information
-        route = data['routes'][0]
-        leg = route['legs'][0]
-
-        # Calculate arrival time
-        duration_in_seconds = leg['duration_in_traffic']['value'] if 'duration_in_traffic' in leg else leg['duration'][
-            'value']
-        arrival_time = datetime.utcnow().timestamp() + duration_in_seconds
-
-        return {
-            'estimatedArrivalTime': datetime.fromtimestamp(arrival_time).isoformat(),
-            'duration': leg['duration_in_traffic']['text'] if 'duration_in_traffic' in leg else leg['duration']['text'],
-            'distance': leg['distance']['text'],
-            'startAddress': leg['start_address'],
-            'endAddress': leg['end_address'],
-            'polyline': route['overview_polyline']['points']  # For displaying the route on a map
-        }
-
-    except Exception as e:
-        return {
-            'error': str(e),
-            'estimatedArrivalTime': None
-        }
-
-
 def lambda_handler(event, context):
     connection = None
     cursor = None
@@ -103,7 +52,7 @@ def lambda_handler(event, context):
 
         # Retrieve service details
         body = json.loads(event.get('body', '{}'))
-        httpMethod = body.get('httpMethod', '')
+        httpmethod = body.get('httpmethod', '')
         query_params = body.get('queryStringParameters', {}) or {}
         path_params = body.get('pathParameters', {}) or {}
 
@@ -125,14 +74,14 @@ def lambda_handler(event, context):
         sp_info = cursor.fetchone()
 
         # Get service provider location
-        if httpMethod == 'GET':
+        if httpmethod == 'GET':
             current_location = get_current_location()
 
             # Calculate ETA
             origin = (current_location['latitude'], current_location['longitude'])
             destination = (user_location['lat'], user_location['lng'])
             eta_info = calculate_google_maps_eta(origin, destination)
-        elif httpMethod == 'POST':
+        elif httpmethod == 'POST':
             current_location = get_current_location()
 
             eta_info = {}
