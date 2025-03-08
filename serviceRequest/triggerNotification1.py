@@ -3,8 +3,7 @@ import boto3
 import logging
 
 from psycopg2.extras import RealDictCursor
-
-from layers.utils import get_secrets, get_db_connection
+from layers.utils import get_secrets, get_db_connection, log_to_sns
 
 
 # Initialize AWS services
@@ -51,6 +50,9 @@ def lambda_handler(event, context):
             }),
             Subject='Provider Assignment Notification',
         )
+
+        log_to_sns(1, 26, 1, 51, tidysp_info, 'Provider Assigned', userid)
+
         logger.info('Sent Assignment Notification')
 
         return {
@@ -64,6 +66,8 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error("Failed to send Assignment Notification.", exc_info=e)
+
+        log_to_sns(4, 26, 1, 6, tidysp_info, '', userid)
 
         return {
             'statusCode': 500,
