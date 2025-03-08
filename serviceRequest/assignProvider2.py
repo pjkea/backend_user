@@ -2,7 +2,7 @@ import json
 import boto3
 import logging
 from twilio.rest import Client
-from serviceRequest.layers.utils import get_secrets, send_email_via_ses, send_sms_via_twilio
+from serviceRequest.layers.utils import get_secrets, send_email_via_ses, send_sms_via_twilio, log_to_sns
 
 # Initialize AWS services
 secrets_manager = boto3.client("secretsmanager", region_name="us-east-1")
@@ -20,32 +20,29 @@ logger.setLevel(logging.INFO)
 SNS_LOGGING_TOPIC_ARN = secrets["SNS_LOGGING_TOPIC_ARN"]
 NOTIFY_PROVIDER_TOPIC_ARN = secrets["NOTIFY_PROVIDER_TOPIC_ARN"]
 
-# Twilio details
-TWILIO_ACCOUNT_SID = secrets["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN = secrets["TWILIO_AUTH_TOKEN"]
-TWILIO_PHONE_NUMBER = secrets["TWILIO_PHONE_NUMBER"]
 
-# Initialize Twilio Client
-twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-
-def prepare_notification_message(record):
+def prepare_notification_message(record, service_details):
     """Prepare a standardized notification message from a record"""
-    try:
-        # Construct a standardized notification message
-        subject = "Nearby Service Request"
-        message = (
-            f"Nearby Service Provider Details:\n"
-            f"Name: {record.get('firstname', '')} {record.get('lastname', '')}\n"
-            f"Distance: {record.get('distance_km', 'N/A')} km\n"
-            f"TidySpID: {record.get('tidyspid', 'N/A')}"
-            "If you want to accept the request please open the app."
-        )
+    # Get the package and price details
+    package = service_details.get('package', {})
+    price = service_details.get('price', {})
+    address = service_details.get('address', 'N/A')
+    total_price = f"{price.get('totalPrice', 0)} {price.get('currency', 'USD')}"
 
-        return subject, message
-    except Exception as e:
-        logger.error(f"Failed to prepare notification message: {e}")
-        raise
+    # Construct a standardized notification message
+    subject = "New Service Request - {package.get('name', 'Service')}"
+    message = (
+        f"New Service Request Available!\n\n"
+        f"Service: {package.get('name', 'N/A')}\n"
+        f"Distance: {record.get('distance_km', 'N/A')} km\n"
+        f"Location: {address}\n"
+        f"Distance from you: {record.get('distance_km', 'N/A')} km\n\n"
+        f"Total Price: {total_price}\n"
+        "If you want to accept the request, please open the app."
+    )
+
+    return subject, message
+
 
 
 def lambda_handler(event, context):
@@ -53,8 +50,15 @@ def lambda_handler(event, context):
         for record in event["Records"]:
             message = json.loads(record["Sns"]["Message"])
 
+            requestid = message.get('requestid')
+            userid = message.get('userid')
+            service_details = message.get('service_details', {})
+
             # Extract nearby records
             nearby_sp = message.get('available_sp', [])
+
+            notification_sent = 0
+            notification_failed = 0
 
             # Process each nearby record
             for sp in nearby_sp:
@@ -77,27 +81,29 @@ def lambda_handler(event, context):
                             notification_text
                         )
 
+                    notification_sent += 1
+
                 except Exception as record_error:
                     logger.error(f"Failed to process record: {record_error}")
-                    # Continue processing other records
                     continue
 
+            data = {
+                "requestid": requestid,
+                "notifications_sent": notification_sent,
+                "notifications_failed": notification_failed
+            }
             # Log success to SNS
-            sns_client.publish(
-                TopicArn=SNS_LOGGING_TOPIC_ARN,
-                Message=json.dumps({
-                    "logtypeid": 1,
-                    "categoryid": 36,  # Service Assignment
-                    "transactiontypeid": 12,  # Address Update(ignore)
-                    "statusid": 5,  # Service Request Assigned
-                })
-            )
+            log_to_sns(1, 36, 12, 4, data, "Provider Notification - Success", userid)
+
+            logger.info("Successfully sent notifications")
 
             return {
                 'statusCode': 200,
                 'body': json.dumps({
                     'message': 'Notifications processed successfully',
-                    'total_notifications': len(nearby_sp)
+                    'total_notifications': len(nearby_sp),
+                    'sent': notification_sent,
+                    'failed': notification_failed
                 })
             }
 
@@ -105,15 +111,7 @@ def lambda_handler(event, context):
         logger.error(f"Notification processing error: {e}")
 
         # Log error to SNS
-        sns_client.publish(
-            TopicArn=SNS_LOGGING_TOPIC_ARN,
-            Message=json.dumps({
-                "logtypeid": 4,
-                "categoryid": 36,  # Service Assignment
-                "transactiontypeid": 12,  # Address Update(ignore)
-                "statusid": 4,  # Service Request Failed
-            })
-        )
+        log_to_sns(4, 36, 12, 4, e, "Provider Notification - Failed", userid)
 
         return {
             'statusCode': 500,
@@ -122,16 +120,4 @@ def lambda_handler(event, context):
                 'message': str(e)
             })
         }
-
-
-
-
-
-
-
-
-
-
-
-
 

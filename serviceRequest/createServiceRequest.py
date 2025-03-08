@@ -2,7 +2,7 @@ import json
 import boto3
 import logging
 from psycopg2.extras import RealDictCursor
-from serviceRequest.layers.utils import get_db_connection, get_secrets
+from serviceRequest.layers.utils import get_db_connection, get_secrets, log_to_sns
 
 # Initialize AWS Clients
 secrets_manager = boto3.client("secretsmanager", region_name="us-east-1")
@@ -29,25 +29,28 @@ def lambda_handler(event, context):
             # Gather service details: package, price, location
             message = json.loads(record["Sns"]["Message"])
             userid = message.get("user_id")
-            package = message.get("package")
-            add_ons = message.get("add_ons", None) # Default if user doesn't choose any add ons
-            price = message.get("price")
+            calculation = message.get("calculation", {})
+
+            package_info = calculation.get("package", {})
+            add_ons = calculation.get("addOns", [])
+            price_detail = calculation.get("priceDetail", {})
+
             address = message.get("address")
             longitude = message.get("longitude")
             latitude = message.get("latitude")
 
-            if not all([userid, package, price, add_ons, address, longitude, latitude]):
-                raise ValueError("Missing fields")
+            if not all([userid, package_info, price_detail, address, longitude, latitude]):
+                raise ValueError("Missing required fields")
 
             # Service details
             service_details = {
-                "userid": userid,
-                "package": package,
-                "add_ons": add_ons,
-                "price": price,
-                "address": address,
-                "longitude": longitude,
-                "latitude": latitude
+                'userid': userid,
+                'package': json.dumps(package_info),
+                'add_ons': json.dumps(add_ons),
+                'price': json.dumps(price_detail),
+                'address': address,
+                'longitude': longitude,
+                'latitude': latitude
             }
 
             # Store in database
@@ -57,7 +60,10 @@ def lambda_handler(event, context):
             cursor.execute("""
             INSERT INTO requests (userid, package, price, add_ons, address, longitude, latitude)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (userid, package, price, add_ons, address, longitude, latitude))
+            """, (userid, service_details["package"], service_details["price"], add_ons, address, longitude, latitude))
+
+            result = cursor.fetchone()
+            requestid = result['requestid'] if result else None
 
             connection.commit()
 
@@ -66,29 +72,22 @@ def lambda_handler(event, context):
                 TopicArn=CREATE_SERVICE_REQUEST_TOPIC_ARN,
                 Message=json.dumps({
                     "userid": userid,
-                    "package": package,
-                    "price": price,
-                    "add_ons": add_ons,
-                    "address": address,
-                    "longitude": longitude,
-                    "latitude": latitude,
-                    "service_details": service_details
+                    "requestid": requestid,
+                    "servicedetails": {
+                        "userid": userid,
+                        "package": package_info,
+                        "price": price_detail,
+                        "add_ons": add_ons,
+                        "address": address,
+                        "longitude": longitude,
+                        "latitude": latitude
+                    }
                 }),
                 Subject="Service Request"
             )
 
             # Log success to SNS
-            sns_client.publish(
-                TopicArn=SNS_LOGGING_TOPIC_ARN,
-                Message=json.dumps({
-                    "logtypeid": 1,
-                    "categoryid": 1,  # Service Request
-                    "transactiontypeid": 12,  # Address Update
-                    "statusid": 9,  # Service Request Created
-                    "userid": userid
-                }),
-                Subject="Service Request - Success",
-            )
+            log_to_sns(1, 1, 12, 9, {service_details}, "Service Request - Success", userid)
 
             logger.info("Successfully sent request")
 
@@ -96,7 +95,12 @@ def lambda_handler(event, context):
                 "statusCode": 200,
                 "body": json.dumps({
                     'message': 'Service request created successfully',
-                    'provider': 'Your request is being processed. Provider matching typically takes 5-10 minutes.'
+                    'provider': 'Your request is being processed. Provider matching typically takes 5-10 minutes.',
+                    'requestDetails': {
+                        'package': package_info["name"],
+                        'totalPrice': price_detail["totalPrice"],
+                        'currency': price_detail["currency"]
+                    }
                 })
             }
 
@@ -104,18 +108,7 @@ def lambda_handler(event, context):
         logger.error(f"Failed to send request: {e}")
 
         # Log failure to SNS
-        sns_client.publish(
-            TopicArn=SNS_LOGGING_TOPIC_ARN,
-            Message=json.dumps({
-                "logtypeid": 4,
-                "categoryid": 1,  # Service Request
-                "transactiontypeid": 12,  # Address Update
-                "statusid": 4,  # Service Request Failed
-                "userid": userid,
-            }),
-            Subject="Service Request - Failed",
-        )
-
+        log_to_sns(4, 1, 12, 4, {service_details}, "Service Request - Error", userid)
 
         return {"statusCode": 500, "error": f"Error processing request: {e}"}
 
@@ -124,8 +117,3 @@ def lambda_handler(event, context):
             connection.close()
         if cursor:
             cursor.close()
-
-
-
-
-

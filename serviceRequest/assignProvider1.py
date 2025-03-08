@@ -3,7 +3,7 @@ import boto3
 import logging
 import math
 from psycopg2.extras import RealDictCursor
-from serviceRequest.layers.utils import get_secrets, get_db_connection
+from serviceRequest.layers.utils import get_secrets, get_db_connection, log_to_sns
 
 # Initialize AWS services
 secrets_manager = boto3.client("secretsmanager", region_name="us-east-1")
@@ -57,6 +57,11 @@ def lambda_handler(event, context):
             message = json.loads(record["Sns"]["Message"])
             service_details = message.get("servicedetails", {})
             userid = service_details.get("userid")
+            requestid = message.get("requestid")
+
+            package_info = service_details.get("package", {})
+            price_detail = service_details.get("price", {})
+            add_ons = service_details.get("add_ons", [])
 
             # Get user location
             latitude = service_details.get("latitude")
@@ -100,8 +105,16 @@ def lambda_handler(event, context):
             sns_client.publish(
                 TopicArn=ASSIGN_PROVIDER_TOPIC_ARN,
                 Message=json.dumps({
+                    'requestid': requestid,
+                    'userid': userid,
                     'total_nearby_records': len(nearby_sp),
                     'max_radius': radius,
+                    'service_details': {
+                        'package': package_info,
+                        'price': price_detail,
+                        'add_ons': add_ons,
+                        'address': service_details.get("address"),
+                    },
                     'center_point': {
                         'latitude': latitude,
                         'longitude': longitude
@@ -110,8 +123,27 @@ def lambda_handler(event, context):
                 })
             )
 
+            data = {"total_providers": len(nearby_sp), "radius_km": radius}
+
+            # Log success to SNS
+            log_to_sns(1, 36, 12, 27, data, "Provider Search - Success", userid)
+
+            logger.info("Provider search successful")
+
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Provider search completed successfully',
+                    'total_providers': len(nearby_sp)
+                })
+            }
+
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+
+        # Log error to SNS
+        log_to_sns(4, 36, 12,4, e, "Provider Search - Failed", userid)
+
         return {
             'statusCode': 500,
             'body': json.dumps({
@@ -127,7 +159,7 @@ def lambda_handler(event, context):
             cursor.close()
 
 
-
+# 1
 
 
 

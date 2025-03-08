@@ -19,7 +19,6 @@ logger.setLevel(logging.INFO)
 secrets = get_secrets()
 
 # SNS topics
-SERVICE_REQUEST_TOPIC_ARN = secrets["SERVICE_REQUEST_TOPIC_ARN"]
 SNS_LOGGING_TOPIC_ARN = secrets["SNS_LOGGING_TOPIC_ARN"]
 
 def lambda_handler(event, context):
@@ -116,17 +115,6 @@ def lambda_handler(event, context):
             'priceDetail': price_detail
         }
 
-        # Send price to SNS
-        sns_client.publish(
-            TopicArn=SERVICE_REQUEST_TOPIC_ARN,
-            Message=json.dumps({
-                "user_id": userid,
-                'calculation': calculation_details
-            }),
-            Subject='Requested Service Price',
-        )
-        logger.info(f"Price calculation completed: {json.dumps(price_detail)}")
-
         # Log success
         log_to_sns(1,1,12,27,{price_detail}, '', userid)
 
@@ -147,6 +135,10 @@ def lambda_handler(event, context):
             "statusCode": 500,
             "body": json.dumps({'error': str(e)})
         }
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
 
