@@ -64,7 +64,7 @@ def lambda_handler(event, context):
             for sp in nearby_sp:
                 try:
                     # Prepare notification message
-                    subject, notification_text = prepare_notification_message(sp)
+                    subject, notification_text = prepare_notification_message(sp, service_details)
 
                     # Send email if email exists
                     if record.get('email'):
