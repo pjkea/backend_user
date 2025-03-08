@@ -3,7 +3,7 @@ import boto3
 import logging
 import stripe
 
-from serviceRequest.layers.utils import get_secrets, get_db_connection
+from serviceRequest.layers.utils import get_secrets, get_db_connection, log_to_sns
 from psycopg2.extras import RealDictCursor
 
 # Initialize AWS Services
@@ -19,9 +19,6 @@ logger.setLevel(logging.INFO)
 
 # Stripe API Key
 STRIPE_API_KEY = secrets['STRIPE_API_KEY']
-
-# SNS Topics
-SNS_LOGGING_TOPIC_ARN = secrets['SNS_LOGGING_TOPIC_ARN']
 
 
 def lambda_handler(event, context):
@@ -80,19 +77,10 @@ def lambda_handler(event, context):
                 connection.commit()
 
                 # Log success to SNS
-                sns_client.publish(
-                    TopicArn=SNS_LOGGING_TOPIC_ARN,
-                    Message=json.dumps({
-                        "logtypeid": 1,
-                        "categoryid": 39,  # Payment Initiated
-                        "transactiontypeid": 11,
-                        "statusid": 23,  # Payment Completed
-                        "userid": user_id,
-                        "orderid": order_id,
-                    })
-                )
 
-                logger.info('Payment successfully created')
+                log_to_sns(1, 39, 11, 23, order_id, "Payment Completed", user_id )
+
+                logger.info('Payment successful')
 
                 return {'statusCode': 200,
                         'body': json.dumps({
@@ -107,17 +95,7 @@ def lambda_handler(event, context):
                 connection.rollback()
 
                 # Log failure to SNS
-                sns_client.publish(
-                    TopicArn=SNS_LOGGING_TOPIC_ARN,
-                    Message=json.dumps({
-                        "logtypeid": 2,
-                        "categoryid": 28,  # Payment Failed
-                        "transactiontypeid": 11,
-                        "statusid": 26,  # Payment Failed
-                        "userid": user_id,
-                        "orderid": order_id,
-                    })
-                )
+                log_to_sns(4, 28, 11, 26, order_id, "Payment failed", user_id)
 
                 return {
                     'statusCode': 500,

@@ -3,11 +3,12 @@ import boto3
 import logging
 import stripe
 
-from serviceRequest.layers.utils import get_secrets, get_db_connection
+from serviceRequest.layers.utils import get_secrets, get_db_connection, log_to_sns
 from psycopg2.extras import RealDictCursor
 
 # Initialize AWS Services
 secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
+sns_client = boto3.client('sns', region_name='us-east-1')
 
 # Load secrets
 secrets = get_secrets()
@@ -74,18 +75,28 @@ def lambda_handler(event, context):
 
             connection.commit()
 
-            logger.info('Payment successfully created')
+            data = {'payment_id': payment_id, 'transaction_id': payment_intent.id}
 
-            return {'statusCode': 200,
-                    'body': json.dumps({
-                        'message': 'Payment processed successfully', 'payment_id': payment_id, 'transaction_id': payment_intent.id
-                    })
-                    }
+            log_to_sns(1, 39, 12, 42, data, "Payment Initiated", user_id)
+
+            logger.info('Payment started successfully')
+
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Payment processed successfully', 'payment_id': payment_id,
+                    'transaction_id': payment_intent.id
+                })
+            }
 
         except stripe.error.StripeError as stripe_error:
             logger.error('Error creating payment: %s', stripe_error)
 
             connection.rollback()
+
+            data = {'payment_id': payment_id, 'transaction_id': payment_intent.id}
+
+            log_to_sns(4, 39, 12, 26, data, "Payment failed", user_id)
 
             return {
                 'statusCode': 500,

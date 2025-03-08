@@ -1,7 +1,7 @@
 import json
 import boto3
 import logging
-from serviceRequest.layers.utils import get_secrets
+from serviceRequest.layers.utils import get_secrets, log_to_sns
 
 # Initialize AWS services
 secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
@@ -48,6 +48,8 @@ def lambda_handler(event, context):
             Subject='Payment Request Processing'
         )
 
+        log_to_sns(1, 39, 12, 42, payment_message, "Payment Processing", user_id)
+
         logger.info('Payment Request Processing')
 
         return {
@@ -59,6 +61,8 @@ def lambda_handler(event, context):
 
     except Exception as e:
         logger.error(f"Payment Processing Failed: {str(e)}")
+
+        log_to_sns(4, 39, 12, 43, "Payment Processing Failed", user_id)
 
         return {
             'statusCode': 500,
