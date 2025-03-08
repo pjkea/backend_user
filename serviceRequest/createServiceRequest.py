@@ -1,6 +1,7 @@
 import json
 import boto3
 import logging
+from datetime import datetime
 from psycopg2.extras import RealDictCursor
 from serviceRequest.layers.utils import get_db_connection, get_secrets, log_to_sns
 
@@ -39,6 +40,17 @@ def lambda_handler(event, context):
             longitude = message.get("longitude")
             latitude = message.get("latitude")
 
+            is_immediate = message.get("is_immediate", True)  # Default to immediate service
+            datetime = None
+
+            if is_immediate:
+                datetime = datetime.datetime.now().isoformat()
+            else:
+                datetime = message.get("scheduled_datetime")
+
+                if not datetime:
+                    raise ValueError("Scheduled date and time is required for non-immediate service")
+
             if not all([userid, package_info, price_detail, address, longitude, latitude]):
                 raise ValueError("Missing required fields")
 
@@ -50,7 +62,8 @@ def lambda_handler(event, context):
                 'price': json.dumps(price_detail),
                 'address': address,
                 'longitude': longitude,
-                'latitude': latitude
+                'latitude': latitude,
+                'datetime': datetime,
             }
 
             # Store in database
@@ -58,9 +71,9 @@ def lambda_handler(event, context):
             cursor = connection.cursor(cursor_factory=RealDictCursor)
 
             cursor.execute("""
-            INSERT INTO requests (userid, package, price, add_ons, address, longitude, latitude)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (userid, service_details["package"], service_details["price"], add_ons, address, longitude, latitude))
+            INSERT INTO requests (userid, package, price, add_ons, address, longitude, latitude, scheduledfor)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (userid, service_details["package"], service_details["price"], add_ons, address, longitude, latitude, datetime))
 
             result = cursor.fetchone()
             requestid = result['requestid'] if result else None
@@ -71,16 +84,17 @@ def lambda_handler(event, context):
             sns_client.publish(
                 TopicArn=CREATE_SERVICE_REQUEST_TOPIC_ARN,
                 Message=json.dumps({
-                    "userid": userid,
-                    "requestid": requestid,
-                    "servicedetails": {
-                        "userid": userid,
-                        "package": package_info,
-                        "price": price_detail,
-                        "add_ons": add_ons,
-                        "address": address,
-                        "longitude": longitude,
-                        "latitude": latitude
+                    'userid': userid,
+                    'requestid': requestid,
+                    'servicedetails': {
+                        'userid': userid,
+                        'package': package_info,
+                        'price': price_detail,
+                        'add_ons': add_ons,
+                        'address': address,
+                        'longitude': longitude,
+                        'latitude': latitude,
+                        'datetime': datetime
                     }
                 }),
                 Subject="Service Request"

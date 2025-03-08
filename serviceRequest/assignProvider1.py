@@ -63,6 +63,8 @@ def lambda_handler(event, context):
             price_detail = service_details.get("price", {})
             add_ons = service_details.get("add_ons", [])
 
+            scheduled_datetime = service_details.get("datetime")
+
             # Get user location
             latitude = service_details.get("latitude")
             longitude = service_details.get("longitude")
@@ -114,6 +116,7 @@ def lambda_handler(event, context):
                         'price': price_detail,
                         'add_ons': add_ons,
                         'address': service_details.get("address"),
+                        'scheduled_datetime': scheduled_datetime
                     },
                     'center_point': {
                         'latitude': latitude,
@@ -123,7 +126,7 @@ def lambda_handler(event, context):
                 })
             )
 
-            data = {"total_providers": len(nearby_sp), "radius_km": radius}
+            data = {"total_providers": len(nearby_sp), "radius_km": radius, "service_time": scheduled_datetime}
 
             # Log success to SNS
             log_to_sns(1, 36, 12, 27, data, "Provider Search - Success", userid)

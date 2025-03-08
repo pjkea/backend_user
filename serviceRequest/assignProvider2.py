@@ -1,6 +1,7 @@
 import json
 import boto3
 import logging
+from datetime import datetime
 from twilio.rest import Client
 from serviceRequest.layers.utils import get_secrets, send_email_via_ses, send_sms_via_twilio, log_to_sns
 
@@ -21,6 +22,11 @@ SNS_LOGGING_TOPIC_ARN = secrets["SNS_LOGGING_TOPIC_ARN"]
 NOTIFY_PROVIDER_TOPIC_ARN = secrets["NOTIFY_PROVIDER_TOPIC_ARN"]
 
 
+def format_datetime(datetime_str):
+    dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+    return dt.strftime("%A, %B %d, %Y at %I:%M %p")
+
+
 def prepare_notification_message(record, service_details):
     """Prepare a standardized notification message from a record"""
     # Get the package and price details
@@ -28,11 +34,13 @@ def prepare_notification_message(record, service_details):
     price = service_details.get('price', {})
     address = service_details.get('address', 'N/A')
     total_price = f"{price.get('totalPrice', 0)} {price.get('currency', 'USD')}"
+    scheduled_datetime = service_details.get('scheduled_datetime')
 
     # Construct a standardized notification message
     subject = "New Service Request - {package.get('name', 'Service')}"
     message = (
         f"New Service Request Available!\n\n"
+        f"⏰ {scheduled_datetime}\n\n"
         f"Service: {package.get('name', 'N/A')}\n"
         f"Distance: {record.get('distance_km', 'N/A')} km\n"
         f"Location: {address}\n"
@@ -53,6 +61,7 @@ def lambda_handler(event, context):
             requestid = message.get('requestid')
             userid = message.get('userid')
             service_details = message.get('service_details', {})
+            scheduled_datetime = service_details.get('scheduled_datetime')
 
             # Extract nearby records
             nearby_sp = message.get('available_sp', [])
@@ -84,13 +93,15 @@ def lambda_handler(event, context):
                     notification_sent += 1
 
                 except Exception as record_error:
-                    logger.error(f"Failed to process record: {record_error}")
+                    logger.error(f"Failed to notify provider {sp.get('tidyspid')}: {record_error}")
+                    notification_failed += 1
                     continue
 
             data = {
                 "requestid": requestid,
                 "notifications_sent": notification_sent,
-                "notifications_failed": notification_failed
+                "notifications_failed": notification_failed,
+                'service_time': scheduled_datetime
             }
             # Log success to SNS
             log_to_sns(1, 36, 12, 4, data, "Provider Notification - Success", userid)
@@ -103,7 +114,8 @@ def lambda_handler(event, context):
                     'message': 'Notifications processed successfully',
                     'total_notifications': len(nearby_sp),
                     'sent': notification_sent,
-                    'failed': notification_failed
+                    'failed': notification_failed,
+                    'service_time': scheduled_datetime
                 })
             }
 
