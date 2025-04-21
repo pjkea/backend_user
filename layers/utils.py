@@ -89,7 +89,7 @@ def send_twilio_sms(to_number, message):
         logger.error(f"Twilio SMS sending failed: {str(e)}", exc_info=True)
 
 # Function to log events to AWS SNS
-def log_to_sns(logtypeid, categoryid, transactiontypeid, statusid, message, userid=None):
+def log_to_sns(logtypeid, categoryid, transactiontypeid, statusid, message, subject, userid=None):
     secrets = get_secrets()
     try:
         sns_client.publish(
@@ -102,7 +102,7 @@ def log_to_sns(logtypeid, categoryid, transactiontypeid, statusid, message, user
                 "message": message,
                 "userid": userid
             }),
-            Subject="Lambda Log Event"
+            Subject=subject
         )
         logger.info(f"Logged event to SNS: {message}")
     except Exception as e:
