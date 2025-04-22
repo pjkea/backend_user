@@ -1,0 +1,197 @@
+import json
+import boto3
+import logging
+from datetime import datetime, timedelta
+from psycopg2.extras import RealDictCursor
+
+from layers.utils import get_secrets, get_db_connection, log_to_sns
+
+# Initialize AWS services
+secrets_client = boto3.client('secretsmanager', region_name='us-east-1')
+sns_client = boto3.client('sns', region_name='us-east-1')
+
+# Load secrets
+secrets = get_secrets()
+
+# Configure logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# SNS topics
+SNS_LOGGING_TOPIC_ARN = secrets["SNS_LOGGING_TOPIC_ARN"]
+
+
+def lambda_handler(event, context):
+    connection = None
+    cursor = None
+
+    try:
+        # Parse query parameters and body
+        query_params = event.get("queryStringParameters", {}) or {}
+        user_id = query_params.get("userid")
+        user_type = query_params.get("usertype", "user")  # Default to regular user
+
+        # Parse body for filter criteria
+        body = json.loads(event.get("body", "{}"))
+
+        # Extract filter parameters
+        period = body.get("period")
+        service_type = body.get("service_type")
+        status = body.get("status", ["COMPLETED", "CANCELLED"])
+        start_date = body.get("start_date")
+        end_date = body.get("end_date")
+        search_term = body.get("search_term")
+
+        # Validate required parameters
+        if not user_id:
+            return {
+                'statusCode': 400,
+                'body': json.dumps({'message': 'Missing required parameter: userid'})
+            }
+
+        # Connect to database
+        connection = get_db_connection()
+        cursor = connection.cursor(cursor_factory=RealDictCursor)
+
+        # Build query with conditions
+        query = """
+            SELECT o.*, od.add_ons, od.notes, r.rating, r.comments as review, 
+                   p.productname as service_name, p.producttype as service_type
+            FROM orders o
+            LEFT JOIN orderdetails od ON o.orderid = od.orderid
+            LEFT JOIN reviews r ON o.orderid = r.orderid
+            LEFT JOIN requests req ON o.requestid = req.requestid
+            LEFT JOIN serviceproducts p ON req.productid = p.productid
+            WHERE {user_condition}
+        """
+
+        # Determine user condition based on user type
+        if user_type.lower() == "tidysp":
+            query = query.format(user_condition="o.tidyspid = %s")
+        else:
+            query = query.format(user_condition="o.userid = %s")
+
+        query_params = [user_id]
+
+        # Add status filter
+        if isinstance(status, list):
+            placeholders = ', '.join(['%s'] * len(status))
+            query += f" AND o.status IN ({placeholders})"
+            query_params.extend(status)
+        elif status:
+            query += " AND o.status = %s"
+            query_params.append(status)
+
+        # Add service type filter
+        if service_type:
+            query += " AND p.producttype = %s"
+            query_params.append(service_type)
+
+        # Add period filter (day, month, year)
+        if period:
+            current_date = datetime.now()
+            if period.lower() == 'day':
+                start_date_period = current_date - timedelta(days=1)
+            elif period.lower() == 'month':
+                start_date_period = current_date - timedelta(days=30)
+            elif period.lower() == 'year':
+                start_date_period = current_date - timedelta(days=365)
+            else:
+                start_date_period = None
+
+            if start_date_period:
+                query += " AND o.createdat >= %s"
+                query_params.append(start_date_period)
+
+        # Add custom date range filter
+        if start_date:
+            query += " AND o.createdat >= %s"
+            query_params.append(start_date)
+
+        if end_date:
+            query += " AND o.createdat <= %s"
+            query_params.append(end_date)
+
+        # Add search term filter
+        if search_term:
+            query += """ AND (
+                od.notes ILIKE %s OR 
+                p.productname ILIKE %s OR 
+                p.producttype ILIKE %s
+            )"""
+            search_param = f"%{search_term}%"
+            query_params.extend([search_param, search_param, search_param])
+
+        # Add sorting
+        query += " ORDER BY o.createdat DESC"
+
+        # Execute query
+        cursor.execute(query, query_params)
+        orders = cursor.fetchall()
+
+        # Format the results
+        formatted_orders = []
+        for order in orders:
+            formatted_order = dict(order)
+
+            # Convert datetime objects to ISO format strings for JSON serialization
+            for key, value in formatted_order.items():
+                if isinstance(value, datetime):
+                    formatted_order[key] = value.isoformat()
+
+            # Parse JSON strings
+            if formatted_order.get('add_ons'):
+                try:
+                    formatted_order['add_ons'] = json.loads(formatted_order['add_ons'])
+                except:
+                    pass  # Keep as string if not valid JSON
+
+            formatted_orders.append(formatted_order)
+
+        # Log success to SNS
+        filter_criteria = {
+            "period": period,
+            "service_type": service_type,
+            "status": status,
+            "date_range": [start_date, end_date] if start_date or end_date else None,
+            "search_term": search_term
+        }
+
+        log_to_sns(1, 11, 5, 1, {
+            "user_id": user_id,
+            "order_count": len(formatted_orders),
+            "filter_criteria": filter_criteria
+        }, "Filter Search Order History - Success", user_id)
+
+        logger.info(f"Successfully filtered order history for user {user_id}")
+
+        return {
+            'statusCode': 200,
+            'body': json.dumps({
+                'message': 'Filtered order history retrieved successfully',
+                'orders': formatted_orders,
+                'total_count': len(formatted_orders),
+                'applied_filters': filter_criteria
+            })
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to filter order history: {e}")
+
+        # Log error to SNS
+        log_to_sns(4, 11, 5, 43, {"user_id": user_id, "error": str(e)},
+                  "Filter Search Order History - Failed", user_id)
+
+        return {
+            'statusCode': 500,
+            'body': json.dumps({
+                'message': 'Failed to filter order history',
+                'error': str(e)
+            })
+        }
+
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()

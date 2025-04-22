@@ -1,0 +1,273 @@
+import json
+import boto3
+import psycopg2
+import logging
+import requests
+from datetime import datetime
+from botocore.exceptions import ClientError
+from twilio.rest import Client
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize AWS services
+secrets_client = boto3.client("secretsmanager", region_name="us-east-1")
+sns_client = boto3.client("sns", region_name="us-east-1")
+ses_client = boto3.client("ses", region_name="us-east-1")
+
+
+# Function to load secrets from AWS Secrets Manager
+def get_secrets():
+    try:
+        secrets = json.loads(secrets_client.get_secret_value(SecretId="tidyzon-env-variables")["SecretString"])
+        return secrets
+    except ClientError as e:
+        logger.error(f"AWS Secrets Manager error: {e.response['Error']['Message']}", exc_info=True)
+        raise
+
+
+# Load secrets for global use
+secrets = get_secrets()
+
+# Twilio credentials - load them once at module level for efficiency
+TWILIO_ACCOUNT_SID = secrets.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = secrets.get("TWILIO_AUTH_TOKEN")
+TWILIO_PHONE_NUMBER = secrets.get("TWILIO_PHONE_NUMBER")
+
+# Initialize Twilio Client if credentials are available
+twilio_client = None
+if all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+    twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+
+# Function to establish a database connection
+def get_db_connection():
+    try:
+        connection = psycopg2.connect(
+            host=secrets["DB_HOST"],
+            database=secrets["DB_NAME"],
+            user=secrets["DB_USER"],
+            password=secrets["DB_PASSWORD"],
+            port=secrets["DB_PORT"]
+        )
+        logger.info("Database connection established successfully")
+        return connection
+    except Exception as e:
+        logger.error(f"Database connection error: {str(e)}", exc_info=True)
+        raise
+
+
+# Function to log events to AWS SNS
+def log_to_sns(log_type_id, category_id, transaction_type_id, status_id, data, subject_prefix, user_id=None):
+    """
+    Log events to SNS for centralized logging and monitoring
+
+    Parameters:
+    - log_type_id: Type of log (1: Info, 2: Debug, 3: Warning, 4: Error)
+    - category_id: Business category (1: Authentication, 2: Orders, etc.)
+    - transaction_type_id: Type of transaction (1: Create, 2: Read, etc.)
+    - status_id: Status of the transaction (1: Success, 2: Failed, etc.)
+    - data: Additional data to log
+    - subject_prefix: Prefix for the SNS subject
+    - user_id: Optional user ID associated with the log
+    """
+    try:
+        sns_topic_arn = secrets.get("SNS_LOGGING_TOPIC_ARN")
+        if not sns_topic_arn:
+            logger.warning("SNS_LOGGING_TOPIC_ARN not found in secrets")
+            return
+
+        # Format the message
+        message = {
+            "logtypeid": log_type_id,
+            "categoryid": category_id,
+            "transactiontypeid": transaction_type_id,
+            "statusid": status_id,
+            "data": data,
+            "userid": user_id,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Create a descriptive subject based on the log type
+        log_types = {1: "INFO", 2: "DEBUG", 3: "WARNING", 4: "ERROR"}
+        log_type_str = log_types.get(log_type_id, "INFO")
+
+        subject = f"{subject_prefix} - {log_type_str}" if subject_prefix else log_type_str
+
+        # Publish to SNS
+        sns_client.publish(
+            TopicArn=sns_topic_arn,
+            Message=json.dumps(message),
+            Subject=subject
+        )
+
+        logger.info(f"Event logged to SNS: {subject}")
+    except Exception as e:
+        logger.error(f"Failed to log to SNS: {str(e)}", exc_info=True)
+
+
+# Function to send SMS using Twilio
+def send_sms_via_twilio(phone_number, message):
+    """
+    Send SMS using Twilio
+
+    Parameters:
+    - phone_number: Recipient's phone number
+    - message: SMS content
+
+    Returns:
+    - Message SID if successful
+    """
+    if not twilio_client:
+        logger.warning("Twilio client not initialized. Check Twilio credentials in secrets.")
+        raise ValueError("Twilio client not initialized")
+
+    try:
+        # Ensure phone number is in E.164 format
+        if not phone_number.startswith('+'):
+            phone_number = f"+{phone_number}"
+
+        # Send SMS
+        twilio_message = twilio_client.messages.create(
+            body=message,
+            from_=TWILIO_PHONE_NUMBER,
+            to=phone_number
+        )
+
+        logger.info(f"SMS sent via Twilio: {twilio_message.sid}")
+        return twilio_message.sid
+    except Exception as e:
+        logger.error(f"Failed to send SMS via Twilio: {str(e)}", exc_info=True)
+        raise
+
+
+# Function to send email using AWS SES
+def send_email_via_ses(email, subject, html_content, sender=None):
+    """
+    Send email using AWS SES
+
+    Parameters:
+    - email: Recipient's email address
+    - subject: Email subject
+    - html_content: HTML content of the email
+    - sender: Optional sender email address (defaults to no-reply@tidyzon.com)
+
+    Returns:
+    - Message ID if successful
+    """
+    if not email:
+        logger.warning("Email address not provided")
+        raise ValueError("Email address is required")
+
+    try:
+        # Default sender email if not provided
+        sender_email = sender or "no-reply@tidyzon.com"
+
+        # Create plain text version from HTML (simple conversion)
+        plain_text = html_content.replace('<br>', '\n').replace('<p>', '\n').replace('</p>', '\n')
+        plain_text = ''.join([i if ord(i) < 128 else ' ' for i in plain_text])
+
+        # Send email
+        response = ses_client.send_email(
+            Source=sender_email,
+            Destination={"ToAddresses": [email]},
+            Message={
+                "Subject": {"Data": subject},
+                "Body": {
+                    "Text": {"Data": plain_text},
+                    "Html": {"Data": html_content}
+                }
+            }
+        )
+
+        message_id = response.get('MessageId')
+        logger.info(f"Email sent via SES to {email}, MessageID: {message_id}")
+        return message_id
+    except Exception as e:
+        logger.error(f"Failed to send email via SES: {str(e)}", exc_info=True)
+        raise
+
+
+# Function to calculate ETAs using Google Maps API
+def calculate_google_maps_eta(origin, destination):
+    """
+    Calculate ETA between two coordinates using Google Maps API
+
+    Parameters:
+    - origin: Tuple of (latitude, longitude) for starting point
+    - destination: Tuple of (latitude, longitude) for destination
+
+    Returns:
+    - Dictionary with ETA details
+    """
+    try:
+        # Get Google Maps API Key
+        api_key = secrets.get("GOOGLE_MAPS_API_KEY")
+        if not api_key:
+            logger.warning("Google Maps API key not found in secrets")
+            return {"error": "API key not configured"}
+
+        # Prepare request
+        base_url = "https://maps.googleapis.com/maps/api/directions/json"
+        params = {
+            'origin': f"{origin[0]},{origin[1]}",
+            'destination': f"{destination[0]},{destination[1]}",
+            'mode': 'driving',
+            'departure_time': 'now',
+            'traffic_model': 'best_guess',
+            'key': api_key
+        }
+
+        # Make request
+        response = requests.get(base_url, params=params)
+        data = response.json()
+
+        # Check success
+        if data['status'] != 'OK':
+            logger.warning(f"Google Maps API error: {data['status']}")
+            return {"error": f"Google Maps API error: {data['status']}"}
+
+        # Parse response
+        route = data['routes'][0]
+        leg = route['legs'][0]
+
+        # Extract ETA details
+        duration_in_seconds = leg['duration_in_traffic']['value'] if 'duration_in_traffic' in leg else leg['duration'][
+            'value']
+        arrival_time = datetime.now().timestamp() + duration_in_seconds
+
+        return {
+            'estimatedArrivalTime': datetime.fromtimestamp(arrival_time).isoformat(),
+            'duration': leg['duration_in_traffic']['text'] if 'duration_in_traffic' in leg else leg['duration']['text'],
+            'distance': leg['distance']['text'],
+            'startAddress': leg['start_address'],
+            'endAddress': leg['end_address'],
+            'polyline': route['overview_polyline']['points']
+        }
+    except Exception as e:
+        logger.error(f"Failed to calculate ETA: {str(e)}", exc_info=True)
+        return {"error": str(e)}
+
+
+# Function to format datetime for display
+def format_datetime_display(dt):
+    """
+    Format datetime object for display
+
+    Parameters:
+    - dt: Datetime object or ISO string
+
+    Returns:
+    - Formatted datetime string
+    """
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        except:
+            return dt
+
+    if isinstance(dt, datetime):
+        return dt.strftime("%A, %B %d, %Y at %I:%M %p")
+
+    return str(dt)
